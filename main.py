@@ -1,19 +1,21 @@
 """
 Main Execution Pipeline for Biosolids Optimization
-PATCHED VERSION - Direct submission export
-
-Run: python main.py
+Integrated with Ground Truth Carbon Scoring
 """
 
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from datetime import datetime
+import traceback
 
+# Import project modules
 from src.data_loader import load_all_data
 from src.state import SystemState
 from src.ml_models import FarmPriorityModel
 from src.solver_greedy import solve_full_year
 from src.utils import check_data_integrity
+from src.scoring import CarbonScorer  # <--- The new scoring module
 
 # Configuration
 DATA_DIR = Path("data")
@@ -25,7 +27,7 @@ def main():
     
     print("=" * 60)
     print("KERALA BIOSOLIDS OPTIMIZATION")
-    print("ML-Enhanced Greedy Solver")
+    print("ML-Enhanced Greedy Solver + Carbon Scoring")
     print("=" * 60)
     print()
     
@@ -37,155 +39,106 @@ def main():
         data = load_all_data()
         print("✓ Data loaded successfully")
         
-        # Debug: Print column names to understand structure
-        print("\nData columns:")
-        print(f"  STP Registry: {list(data['stp_registry'].columns)}")
-        print(f"  Farm Locations: {list(data['farm_locations'].columns)}")
-        print(f"  Daily Weather: {list(data['daily_weather'].columns)}")
-        print(f"  Daily N Demand: {list(data['daily_n_demand'].columns)}")  # ADDED
-        print(f"  Planting Schedule: {list(data['planting_schedule'].columns)}")  # ADDED
-        
-        # Validate - TEMPORARILY DISABLED TO SEE COLUMNS
-        # valid, msg = check_data_integrity(data)
-        # if not valid:
-        #     print(f"✗ Data validation failed: {msg}")
-        #     return
-        
-        print(f"\n  - STPs: {len(data['stp_registry'])}")
-        print(f"  - Farms: {len(data['farm_locations'])}")
-        print(f"  - Weather records: {len(data['daily_weather'])}")
-        
+        # Basic integrity check
+        valid, msg = check_data_integrity(data)
+        if not valid:
+            print(f"✗ Data Integrity Error: {msg}")
+            return
+            
     except Exception as e:
-        print(f"✗ Error loading data: {e}")
-        import traceback
+        print(f"✗ Failed to load data: {e}")
         traceback.print_exc()
         return
-    
+
     # ========================================
     # STEP 2: Initialize State
     # ========================================
-    print("\n[2/5] Initializing system state...")
+    print("\n[2/5] Initializing System State...")
     try:
         state = SystemState(data)
-        print("✓ State initialized")
-        
-        summary = state.get_state_summary()
-        print(f"  - Start date: {summary['date']}")
-        print(f"  - Total STP storage: {summary['total_stp_storage_kg']/1e6:.2f}M kg")
-        print(f"  - Total farm demand: {summary['total_farm_demand_kg']/1e6:.2f}M kg")
-        
+        print(f"✓ State initialized for {state.current_date.date()}")
+        print(f"  - {len(state.stp_registry)} STPs")
+        print(f"  - {len(state.farm_locations)} Farms")
     except Exception as e:
-        print(f"✗ Error initializing state: {e}")
-        import traceback
+        print(f"✗ State initialization failed: {e}")
         traceback.print_exc()
         return
-    
+
     # ========================================
-    # STEP 3: Train ML Model
+    # STEP 3: Train/Init ML Models
     # ========================================
-    print("\n[3/5] Training ML priority model...")
+    print("\n[3/5] Preparing ML Priority Model...")
     try:
         priority_model = FarmPriorityModel()
-        priority_model.train(state)
+        
+        # Check if we need training (or just use heuristics if model is simple)
+        # Using the synthetic data generation from your ML module
+        X_train, y_train = priority_model.generate_synthetic_training_data(state)
+        priority_model.model.fit(X_train, y_train)
+        priority_model.is_trained = True
+        print(f"✓ Model trained on {len(X_train)} synthetic samples")
         
     except Exception as e:
-        print(f"⚠ Error training model: {e}")
-        print("  Continuing with expert heuristics...")
-        priority_model = FarmPriorityModel()
-    
+        print(f"⚠ ML Model failed, falling back to heuristics: {e}")
+        # Ensure model works even if training fails (heuristics fallback)
+        priority_model.is_trained = False
+
     # ========================================
-    # STEP 4: Solve Full Year
+    # STEP 4: Run Simulation (Greedy Solver)
     # ========================================
-    print("\n[4/5] Running optimization...")
-    start_time = datetime.now()
-    
+    print("\n[4/5] Running Simulation (365 Days)...")
     try:
-        # Reset state for fresh run
-        state = SystemState(data)
-        
-        # Run solver (modifies state.action_history)
         solve_full_year(state, priority_model)
-        
-        elapsed = (datetime.now() - start_time).total_seconds()
-        print(f"✓ Optimization complete in {elapsed:.1f}s")
-        
+        print("✓ Simulation complete.")
     except Exception as e:
-        print(f"✗ Error during optimization: {e}")
-        import traceback
+        print(f"✗ Simulation crashed: {e}")
         traceback.print_exc()
         return
-    
+
     # ========================================
-    # STEP 5: Export Solution
+    # STEP 5: Export & Verify
     # ========================================
-    print("\n[5/5] Exporting solution...")
+    print("\n[5/5] Exporting Solution & Scoring...")
     try:
-        # Load sample submission
-        sample_path = DATA_DIR / "sample_submission.csv"
-        submission = pd.read_csv(sample_path)
+        # 1. Convert action history to DataFrame
+        if not state.action_history:
+            print("⚠ WARNING: No actions were taken! Solution is empty.")
+            return
+
+        submission = pd.DataFrame(state.action_history)
         
-        print(f"  Sample submission shape: {submission.shape}")
-        print(f"  Action history size: {len(state.action_history)}")
+        # Ensure correct column order for Kaggle/Submission
+        cols = ["date", "stp_id", "farm_id", "tons_delivered"]
+        submission = submission[cols]
         
-        # Convert action_history to DataFrame
-        actions_df = pd.DataFrame(state.action_history)
+        # Format date as YYYY-MM-DD
+        submission["date"] = pd.to_datetime(submission["date"]).dt.strftime("%Y-%m-%d")
         
-        if len(actions_df) > 0:
-            # Ensure date column is datetime
-            actions_df["date"] = pd.to_datetime(actions_df["date"])
-            submission["date"] = pd.to_datetime(submission["date"])
-            
-            # Merge actions into submission
-            # First zero everything
-            submission["tons_delivered"] = 0.0
-            
-            # Then update with our actions
-            for _, action in actions_df.iterrows():
-                mask = (
-                    (submission["date"] == action["date"]) &
-                    (submission["stp_id"] == action["stp_id"]) &
-                    (submission["farm_id"] == action["farm_id"])
-                )
-                
-                if mask.any():
-                    submission.loc[mask, "tons_delivered"] = action["tons_delivered"]
-        
-        # Write to file
+        # 2. Write CSV
         output_path = OUTPUT_DIR / "solution.csv"
         submission.to_csv(output_path, index=False)
-        print(f"✓ Solution written to {output_path}")
+        print(f"✓ Solution saved to: {output_path}")
         
-        # Statistics
+        # 3. Statistics
         total_tons = submission["tons_delivered"].sum()
-        nonzero = (submission["tons_delivered"] > 0).sum()
+        print(f"\nStats:")
+        print(f"  - Total Tons Delivered: {total_tons:,.0f}")
+        print(f"  - Total Trips (approx): {len(submission):,}")
+
+        # ========================================
+        # STEP 6: VERIFY SCORE (Ground Truth)
+        # ========================================
+        # This uses the new src.scoring module we just built
         
-        print(f"\nSolution Statistics:")
-        print(f"  - Total tons allocated: {total_tons:,.0f}")
-        print(f"  - Non-zero entries: {nonzero:,} / {len(submission):,}")
-        if nonzero > 0:
-            print(f"  - Avg shipment size: {total_tons/nonzero:.2f} tons")
+        scorer = CarbonScorer(state)
+        # We pass the submission DF we just created
+        final_score = scorer.score_run(submission)
         
-        # Final state check
-        final_summary = state.get_state_summary()
-        print(f"\nFinal State:")
-        print(f"  - Remaining STP storage: {final_summary['total_stp_storage_kg']/1e6:.1f}M kg")
-        print(f"  - Remaining farm demand: {final_summary['total_farm_demand_kg']/1e6:.1f}M kg")
+        # The scorer handles printing the beautiful report internally
         
     except Exception as e:
-        print(f"✗ Error exporting solution: {e}")
-        import traceback
+        print(f"✗ Error during export/scoring: {e}")
         traceback.print_exc()
-        return
-    
-    print("\n" + "=" * 60)
-    print("PIPELINE COMPLETE ✓")
-    print("=" * 60)
-    print(f"\nSubmit: {output_path}")
-    print("\nNext steps:")
-    print("1. Submit to Kaggle")
-    print("2. Check score")
-    print("3. If errors, share error messages")
-
 
 if __name__ == "__main__":
     main()
