@@ -42,6 +42,8 @@ def main():
         print(f"  STP Registry: {list(data['stp_registry'].columns)}")
         print(f"  Farm Locations: {list(data['farm_locations'].columns)}")
         print(f"  Daily Weather: {list(data['daily_weather'].columns)}")
+        print(f"  Daily N Demand: {list(data['daily_n_demand'].columns)}")  # ADDED
+        print(f"  Planting Schedule: {list(data['planting_schedule'].columns)}")  # ADDED
         
         # Validate - TEMPORARILY DISABLED TO SEE COLUMNS
         # valid, msg = check_data_integrity(data)
