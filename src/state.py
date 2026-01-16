@@ -1,6 +1,6 @@
 """
 System State Management
-FIXED: Handles Wide-Format Data + Whitespace stripping
+CORRECT FIX: Smarter Data Cleaning (No Hard-Coding)
 """
 
 import numpy as np
@@ -20,10 +20,6 @@ class SystemState:
         self.planting_schedule = data["planting_schedule"]
         self.daily_n_demand = data["daily_n_demand"]
         
-        # CLEANUP: Strip whitespace from column headers to match Farm IDs
-        self.daily_n_demand.columns = self.daily_n_demand.columns.str.strip()
-        self.farm_locations["farm_id"] = self.farm_locations["farm_id"].str.strip()
-        
         # 1. Parse dates
         self.weather_df["date"] = pd.to_datetime(self.weather_df["date"])
         
@@ -34,7 +30,7 @@ class SystemState:
         # 3. Initialize STP Storage (Start at 50% capacity)
         self.stp_storage = self.stp_registry["storage_max_tons"].values * 1000 * 0.5
         
-        # 4. Initialize Farm Demand
+        # 4. Initialize Farm Demand (SMART MATCHING)
         self.farm_n_remaining = np.zeros(len(self.farm_locations))
         self._initialize_farm_demands()
         
@@ -48,16 +44,43 @@ class SystemState:
         self.action_history = []
 
     def _initialize_farm_demands(self):
-        """Sum total yearly demand for each farm from columns."""
-        farm_id_to_idx = {fid: i for i, fid in enumerate(self.farm_locations["farm_id"])}
-        
-        for col_name in self.daily_n_demand.columns:
-            if col_name == "date": continue
+        """
+        Sum total yearly demand for each farm.
+        Uses CLEANING, not hard-coding, to fix mismatches.
+        """
+        # 1. Create a map of {Cleaned_ID: Index}
+        # e.g., "F_1001" -> 0
+        farm_map = {}
+        for idx, row in self.farm_locations.iterrows():
+            raw_id = str(row['farm_id'])
+            clean_id = raw_id.strip() # Remove spaces
+            farm_map[clean_id] = idx
             
-            if col_name in farm_id_to_idx:
-                idx = farm_id_to_idx[col_name]
-                total_kg = self.daily_n_demand[col_name].sum()
-                self.farm_n_remaining[idx] = total_kg
+        matches = 0
+        total_demand_found = 0
+        
+        # 2. Iterate columns in demand file
+        for col in self.daily_n_demand.columns:
+            if col == 'date':
+                continue
+                
+            # Clean the column header (e.g. " F_1001 " -> "F_1001")
+            clean_col = str(col).strip()
+            
+            if clean_col in farm_map:
+                farm_idx = farm_map[clean_col]
+                
+                # Sum the column to get yearly demand
+                yearly_sum = self.daily_n_demand[col].sum()
+                self.farm_n_remaining[farm_idx] = yearly_sum
+                total_demand_found += yearly_sum
+                matches += 1
+        
+        print(f"  > [State] Successfully matched {matches} farms.")
+        print(f"  > [State] Total Nitrogen Demand Found: {total_demand_found:,.0f} kg")
+        
+        if matches == 0:
+            raise ValueError("CRITICAL: No farm columns matched! Check CSV headers manually.")
 
     def _map_farms_to_regions(self):
         regions = []
@@ -104,6 +127,7 @@ class SystemState:
     def apply_action(self, stp_idx: int, farm_idx: int, tons: float):
         kg = tons * 1000
         self.stp_storage[stp_idx] -= kg
+        # Assume biosolid is 5% Nitrogen
         self.farm_n_remaining[farm_idx] -= (kg * 0.05)
         
         self.action_history.append({
@@ -127,3 +151,4 @@ class SystemState:
             "total_stp_storage_kg": np.sum(self.stp_storage),
             "total_farm_demand_kg": np.sum(self.farm_n_remaining)
         }
+        
