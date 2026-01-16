@@ -1,144 +1,85 @@
 """
-Main Execution Pipeline for Biosolids Optimization
-Integrated with Ground Truth Carbon Scoring
+Main Execution Pipeline
+FIXED: Uses Improved Solver + Generates 91,250 Rows
 """
-
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from datetime import datetime
+import itertools
 import traceback
 
-# Import project modules
 from src.data_loader import load_all_data
 from src.state import SystemState
-from src.ml_models import FarmPriorityModel
-from src.solver_greedy import solve_full_year
 from src.utils import check_data_integrity
-from src.scoring import CarbonScorer  # <--- The new scoring module
+from src.scoring import CarbonScorer
+from src.solver_improved import run_improved_solver # <--- IMPORTING NEW SOLVER
 
-# Configuration
 DATA_DIR = Path("data")
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 def main():
-    """Execute full optimization pipeline."""
+    print("="*60 + "\nKERALA BIOSOLIDS OPTIMIZATION\n" + "="*60)
     
-    print("=" * 60)
-    print("KERALA BIOSOLIDS OPTIMIZATION")
-    print("ML-Enhanced Greedy Solver + Carbon Scoring")
-    print("=" * 60)
-    print()
-    
-    # ========================================
-    # STEP 1: Load Data
-    # ========================================
+    # 1. Load
     print("[1/5] Loading data...")
+    data = load_all_data()
+    
+    # 2. Init
+    print("\n[2/5] Initializing State...")
+    state = SystemState(data)
+    
+    # 3. Run Simulation (New Solver)
+    print("\n[3/5] Running Improved Solver...")
+    run_improved_solver(state)
+    
+    # 4. Export Submission (Dense Format)
+    print("\n[4/5] Generating 91,250 Row Submission...")
     try:
-        data = load_all_data()
-        print("✓ Data loaded successfully")
+        # Create full grid
+        dates = pd.date_range("2025-01-01", "2025-12-31")
+        farms = state.farm_locations["farm_id"].unique()
+        skeleton = pd.DataFrame(list(itertools.product(dates, farms)), columns=["date_dt", "farm_id"])
+        skeleton["date"] = skeleton["date_dt"].dt.strftime("%Y-%m-%d")
         
-        # Basic integrity check
-        valid, msg = check_data_integrity(data)
-        if not valid:
-            print(f"✗ Data Integrity Error: {msg}")
-            return
-            
+        # Merge actuals
+        if state.action_history:
+            actual = pd.DataFrame(state.action_history)
+            actual["date"] = pd.to_datetime(actual["date"]).dt.strftime("%Y-%m-%d")
+            actual = actual.groupby(["date", "farm_id"], as_index=False).agg({
+                "tons_delivered": "sum", "stp_id": "first"
+            })
+            final = pd.merge(skeleton, actual, on=["date", "farm_id"], how="left")
+        else:
+            final = skeleton.copy()
+            final["tons_delivered"] = 0
+            final["stp_id"] = state.stp_registry.iloc[0]["stp_id"]
+
+        # Fill NaNs
+        final["tons_delivered"] = final["tons_delivered"].fillna(0)
+        final["stp_id"] = final["stp_id"].fillna(state.stp_registry.iloc[0]["stp_id"])
+        
+        # Add ID
+        final.sort_values(["date_dt", "farm_id"], inplace=True)
+        final.insert(0, "id", range(len(final)))
+        
+        # Save
+        out_file = OUTPUT_DIR / "solution.csv"
+        final[["id", "date", "stp_id", "farm_id", "tons_delivered"]].to_csv(out_file, index=False)
+        
+        print(f"✓ Saved: {out_file}")
+        print(f"  Rows: {len(final)} (Expected: 91250)")
+        print(f"  Total Tons: {final['tons_delivered'].sum():,.0f}")
+        
     except Exception as e:
-        print(f"✗ Failed to load data: {e}")
+        print(f"Export failed: {e}")
         traceback.print_exc()
-        return
 
-    # ========================================
-    # STEP 2: Initialize State
-    # ========================================
-    print("\n[2/5] Initializing System State...")
-    try:
-        state = SystemState(data)
-        print(f"✓ State initialized for {state.current_date.date()}")
-        print(f"  - {len(state.stp_registry)} STPs")
-        print(f"  - {len(state.farm_locations)} Farms")
-    except Exception as e:
-        print(f"✗ State initialization failed: {e}")
-        traceback.print_exc()
-        return
-
-    # ========================================
-    # STEP 3: Train/Init ML Models
-    # ========================================
-    print("\n[3/5] Preparing ML Priority Model...")
-    try:
-        priority_model = FarmPriorityModel()
-        
-        # Check if we need training (or just use heuristics if model is simple)
-        # Using the synthetic data generation from your ML module
-        X_train, y_train = priority_model.generate_synthetic_training_data(state)
-        priority_model.model.fit(X_train, y_train)
-        priority_model.is_trained = True
-        print(f"✓ Model trained on {len(X_train)} synthetic samples")
-        
-    except Exception as e:
-        print(f"⚠ ML Model failed, falling back to heuristics: {e}")
-        # Ensure model works even if training fails (heuristics fallback)
-        priority_model.is_trained = False
-
-    # ========================================
-    # STEP 4: Run Simulation (Greedy Solver)
-    # ========================================
-    print("\n[4/5] Running Simulation (365 Days)...")
-    try:
-        solve_full_year(state, priority_model)
-        print("✓ Simulation complete.")
-    except Exception as e:
-        print(f"✗ Simulation crashed: {e}")
-        traceback.print_exc()
-        return
-
-    # ========================================
-    # STEP 5: Export & Verify
-    # ========================================
-    print("\n[5/5] Exporting Solution & Scoring...")
-    try:
-        # 1. Convert action history to DataFrame
-        if not state.action_history:
-            print("⚠ WARNING: No actions were taken! Solution is empty.")
-            return
-
-        submission = pd.DataFrame(state.action_history)
-        
-        # Ensure correct column order for Kaggle/Submission
-        cols = ["date", "stp_id", "farm_id", "tons_delivered"]
-        submission = submission[cols]
-        
-        # Format date as YYYY-MM-DD
-        submission["date"] = pd.to_datetime(submission["date"]).dt.strftime("%Y-%m-%d")
-        
-        # 2. Write CSV
-        output_path = OUTPUT_DIR / "solution.csv"
-        submission.to_csv(output_path, index=False)
-        print(f"✓ Solution saved to: {output_path}")
-        
-        # 3. Statistics
-        total_tons = submission["tons_delivered"].sum()
-        print(f"\nStats:")
-        print(f"  - Total Tons Delivered: {total_tons:,.0f}")
-        print(f"  - Total Trips (approx): {len(submission):,}")
-
-        # ========================================
-        # STEP 6: VERIFY SCORE (Ground Truth)
-        # ========================================
-        # This uses the new src.scoring module we just built
-        
-        scorer = CarbonScorer(state)
-        # We pass the submission DF we just created
-        final_score = scorer.score_run(submission)
-        
-        # The scorer handles printing the beautiful report internally
-        
-    except Exception as e:
-        print(f"✗ Error during export/scoring: {e}")
-        traceback.print_exc()
+    # 5. Score
+    print("\n[5/5] Scoring...")
+    scorer = CarbonScorer(state)
+    # Score only active rows for speed
+    scorer.score_run(final[final["tons_delivered"] > 0].copy())
 
 if __name__ == "__main__":
     main()

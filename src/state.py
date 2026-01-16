@@ -1,6 +1,6 @@
 """
 System State Management
-FIXED: Handles Wide-Format Nitrogen Demand Data
+FIXED: Handles Wide-Format Data + Whitespace stripping
 """
 
 import numpy as np
@@ -20,6 +20,10 @@ class SystemState:
         self.planting_schedule = data["planting_schedule"]
         self.daily_n_demand = data["daily_n_demand"]
         
+        # CLEANUP: Strip whitespace from column headers to match Farm IDs
+        self.daily_n_demand.columns = self.daily_n_demand.columns.str.strip()
+        self.farm_locations["farm_id"] = self.farm_locations["farm_id"].str.strip()
+        
         # 1. Parse dates
         self.weather_df["date"] = pd.to_datetime(self.weather_df["date"])
         
@@ -28,18 +32,16 @@ class SystemState:
         self.current_date = datetime(2025, 1, 1)
         
         # 3. Initialize STP Storage (Start at 50% capacity)
-        # Convert TONS -> KG
         self.stp_storage = self.stp_registry["storage_max_tons"].values * 1000 * 0.5
         
-        # 4. Initialize Farm Demand (THE FIX)
-        # We sum the columns instead of looking for a 'farm_id' column
+        # 4. Initialize Farm Demand
         self.farm_n_remaining = np.zeros(len(self.farm_locations))
         self._initialize_farm_demands()
         
         # 5. Precompute Distances
         self.distance_matrix = self._compute_distances()
         
-        # 6. Map Regions for Weather
+        # 6. Map Regions
         self.farm_regions = self._map_farms_to_regions()
         
         # 7. Action Log
@@ -47,40 +49,27 @@ class SystemState:
 
     def _initialize_farm_demands(self):
         """Sum total yearly demand for each farm from columns."""
-        # Create a map of farm_id -> index for O(1) lookup
         farm_id_to_idx = {fid: i for i, fid in enumerate(self.farm_locations["farm_id"])}
         
-        # Iterate over columns in the demand file
         for col_name in self.daily_n_demand.columns:
-            # Skip the date column
-            if col_name == "date":
-                continue
-                
-            # If this column name is a known farm ID, sum it
+            if col_name == "date": continue
+            
             if col_name in farm_id_to_idx:
                 idx = farm_id_to_idx[col_name]
                 total_kg = self.daily_n_demand[col_name].sum()
                 self.farm_n_remaining[idx] = total_kg
 
     def _map_farms_to_regions(self):
-        """Map each farm to a weather region based on location."""
         regions = []
         for _, row in self.farm_locations.iterrows():
             lat, lon = row["lat"], row["lon"]
-            
-            # Simple heuristic mapping
-            if 9.0 <= lat <= 9.5:
-                regions.append("Kuttanad")
-            elif 10.5 <= lat <= 11.0 and lon < 76.5:
-                regions.append("Palakkad")
-            elif lon >= 76.5:
-                regions.append("Highlands")
-            else:
-                regions.append("Coastal")
+            if 9.0 <= lat <= 9.5: regions.append("Kuttanad")
+            elif 10.5 <= lat <= 11.0 and lon < 76.5: regions.append("Palakkad")
+            elif lon >= 76.5: regions.append("Highlands")
+            else: regions.append("Coastal")
         return regions
 
     def _compute_distances(self) -> np.ndarray:
-        """Compute STP to Farm distances matrix."""
         n_stps = len(self.stp_registry)
         n_farms = len(self.farm_locations)
         dists = np.zeros((n_stps, n_farms))
@@ -98,7 +87,7 @@ class SystemState:
 
     @staticmethod
     def _haversine(lat1, lon1, lat2, lon2):
-        R = 6371  # Earth radius km
+        R = 6371
         phi1, phi2 = np.radians(lat1), np.radians(lat2)
         dphi = np.radians(lat2 - lat1)
         dlambda = np.radians(lon2 - lon1)
@@ -106,23 +95,17 @@ class SystemState:
         return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
 
     def get_5day_rainfall(self, farm_idx: int) -> float:
-        """Sum rainfall for next 5 days for the farm's region."""
         region = self.farm_regions[farm_idx]
         end_date = self.current_date + timedelta(days=5)
-        
         mask = (self.weather_df["date"] >= self.current_date) & \
                (self.weather_df["date"] < end_date)
-        
         return self.weather_df.loc[mask, region].sum()
 
     def apply_action(self, stp_idx: int, farm_idx: int, tons: float):
-        """Apply transport action: reduce storage, satisfy demand, log it."""
         kg = tons * 1000
         self.stp_storage[stp_idx] -= kg
-        # Assume biosolid is 5% Nitrogen
         self.farm_n_remaining[farm_idx] -= (kg * 0.05)
         
-        # Log for submission
         self.action_history.append({
             "date": self.current_date,
             "stp_id": self.stp_registry.iloc[stp_idx]["stp_id"],
@@ -131,16 +114,10 @@ class SystemState:
         })
 
     def advance_day(self):
-        """Add daily production and move clock forward."""
-        # Refill STPs (Tons -> Kg)
         daily_prod = self.stp_registry["daily_output_tons"].values * 1000
         max_cap = self.stp_registry["storage_max_tons"].values * 1000
-        
         self.stp_storage += daily_prod
-        
-        # Handle overflow (clip to max)
         self.stp_storage = np.minimum(self.stp_storage, max_cap)
-        
         self.current_date += timedelta(days=1)
         self.current_day += 1
 
