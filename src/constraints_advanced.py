@@ -64,9 +64,9 @@ class FarmLookaheadAnalysis:
     analysis_day: int
     
     # Current state
-    is_currently_safe: bool
-    current_rainfall_5day: float
-    current_risk_score: float
+    is_currently_safe: bool = False
+    current_rainfall_5day: float = 0.0
+    current_risk_score: float = 0.0
     
     # Forecast windows
     safe_windows: List[SafeWindow] = field(default_factory=list)
