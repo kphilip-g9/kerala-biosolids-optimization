@@ -74,7 +74,7 @@ class ImprovedSolver:
             
             # Send max possible
             max_truck = 20000.0
-            farm_cap = self.state.farm_n_remaining[farm_idx] / 0.05
+            farm_cap = (self.state.farm_n_remaining[farm_idx] * 1.10) / 0.05
             
             send_kg = min(self.state.stp_storage[stp_idx], max_truck, farm_cap)
             send_tons = send_kg / 1000.0
