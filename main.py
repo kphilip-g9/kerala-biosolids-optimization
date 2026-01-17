@@ -11,8 +11,7 @@ import traceback
 from src.data_loader import load_all_data
 from src.state import SystemState
 from src.utils import check_data_integrity
-from src.scoring import CarbonScorer
-from src.solver_strategic import run_strategic_solver as run_improved_solver
+from src.solver_improved import run_improved_solver
 
 DATA_DIR = Path("data")
 OUTPUT_DIR = Path("outputs")
@@ -31,7 +30,7 @@ def main():
     
     # 3. Run Simulation (New Solver)
     print("\n[3/5] Running Improved Solver...")
-    run_improved_solver(state, multi_phase=True, use_cache=True)
+    run_improved_solver(state)
     
     # 4. Export Submission (Dense Format)
     print("\n[4/5] Generating 91,250 Row Submission...")
