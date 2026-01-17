@@ -14,6 +14,7 @@ from src.utils import check_data_integrity
 from src.scoring import CarbonScorer
 from src.solver_improved import run_improved_solver
 from src.solver_optimized import run_optimized_solver
+from src.solver_final import run_final_solver
 
 DATA_DIR = Path("data")
 OUTPUT_DIR = Path("outputs")
@@ -32,7 +33,7 @@ def main():
     
     # 3. Run Simulation (New Solver)
     print("\n[3/5] Running Improved Solver...")
-    run_optimized_solver(state)
+    run_final_solver(state)
     
     # 4. Export Submission (Dense Format)
     print("\n[4/5] Generating 91,250 Row Submission...")
