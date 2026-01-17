@@ -20,6 +20,8 @@ class OptimizedSolver:
     def __init__(self, state):
         self.state = state
         self.daily_demand = state.daily_n_demand.copy()
+
+        
         
         # Clean columns
         self.daily_demand.columns = self.daily_demand.columns.str.strip()
@@ -78,7 +80,7 @@ class OptimizedSolver:
         
         # 2. Distance factor
         dist = self.state.distance_matrix[stp_idx, farm_idx]
-        score = 1000.0 / (dist + 1.0)
+        score = 2000.0 / (dist + 1.0)   
         
         # 3. Rain check (FAST - uses pre-computed cache)
         if self.is_rain_blocked(farm_idx, self.state.current_day):
